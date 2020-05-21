@@ -19,19 +19,25 @@ package org.apache.cordova.camera;
 import android.annotation.SuppressLint;
 import android.content.ContentUris;
 import android.content.Context;
-import android.content.CursorLoader;
 import android.database.Cursor;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Environment;
 import android.provider.DocumentsContract;
 import android.provider.MediaStore;
+import android.provider.OpenableColumns;
+import android.util.Log;
 import android.webkit.MimeTypeMap;
 
-import org.apache.cordova.CordovaInterface;
-import org.apache.cordova.LOG;
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
 
+import org.apache.cordova.CordovaInterface;
+
+import java.io.BufferedOutputStream;
+import java.io.File;
 import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.Locale;
@@ -44,7 +50,7 @@ public class FileHelper {
      * Returns the real path of the given URI string.
      * If the given URI string represents a content:// URI, the real path is retrieved from the media store.
      *
-     * @param uriString the URI string of the audio/image/video
+     * @param uri the URI of the audio/image/video
      * @param cordova the current application context
      * @return the full path to the file
      */
@@ -66,7 +72,7 @@ public class FileHelper {
      * Returns the real path of the given URI.
      * If the given URI is a content:// URI, the real path is retrieved from the media store.
      *
-     * @param uri the URI of the audio/image/video
+     * @param uriString the URI string from which to obtain the input stream
      * @param cordova the current application context
      * @return the full path to the file
      */
@@ -102,10 +108,28 @@ public class FileHelper {
                         return id.replaceFirst("raw:", "");
                     }
                     try {
-                        final Uri contentUri = ContentUris.withAppendedId(
-                                Uri.parse("content://downloads/public_downloads"), Long.valueOf(id));
+                        String[] contentUriPrefixesToTry = new String[]{
+                                "content://downloads/public_downloads",
+                                "content://downloads/my_downloads",
+                                "content://downloads/all_downloads"
+                        };
+                        for (String contentUriPrefix : contentUriPrefixesToTry) {
+                            final Uri contentUri = ContentUris.withAppendedId(Uri.parse(contentUriPrefix    ), Long.valueOf(id));
+                            String res = getDataColumn(context, contentUri, null, null);
+                            if (res != null) return res;
+                        }
 
-                        return getDataColumn(context, contentUri, null, null);
+                        String fileName = getFileName(context, uri);
+                        File cacheDir = getDocumentCacheDir(context);
+                        File file = generateFileName(fileName, cacheDir);
+                        String destinationPath = null;
+                        if (file != null) {
+                            destinationPath = file.getAbsolutePath();
+                            saveFileFromUri(context, uri, destinationPath);
+                        }
+
+                        return destinationPath;
+
                     } catch (NumberFormatException e) {
                         return null;
                     }
@@ -142,6 +166,9 @@ public class FileHelper {
             // Return the remote address
             if (isGooglePhotosUri(uri))
                 return uri.getLastPathSegment();
+
+            if (isFileProviderUri(context, uri))
+                return getFileProviderPath(context, uri);
 
             return getDataColumn(context, uri, null, null);
         }
@@ -188,6 +215,7 @@ public class FileHelper {
             if (question > -1) {
                 uriString = uriString.substring(0, question);
             }
+
             if (uriString.startsWith("file:///android_asset/")) {
                 Uri uri = Uri.parse(uriString);
                 String relativePath = uri.getPath().substring(15);
@@ -217,6 +245,7 @@ public class FileHelper {
      * @return a path without the "file://" prefix
      */
     public static String stripFileProtocol(String uriString) {
+
         if (uriString.startsWith("file://")) {
             uriString = uriString.substring(7);
         }
@@ -327,4 +356,233 @@ public class FileHelper {
     public static boolean isGooglePhotosUri(Uri uri) {
         return "com.google.android.apps.photos.content".equals(uri.getAuthority());
     }
+
+    /**
+     * @param context The Application context
+     * @param uri The Uri is checked by functions
+     * @return Whether the Uri authority is FileProvider
+     */
+    public static boolean isFileProviderUri(final Context context, final Uri uri) {
+        final String packageName = context.getPackageName();
+        final String authority = new StringBuilder(packageName).append(".provider").toString();
+        return authority.equals(uri.getAuthority());
+    }
+
+    /**
+     * @param context The Application context
+     * @param uri The Uri is checked by functions
+     * @return File path or null if file is missing
+     */
+    public static String getFileProviderPath(final Context context, final Uri uri)
+    {
+        final File appDir = context.getExternalFilesDir(Environment.DIRECTORY_PICTURES);
+        final File file = new File(appDir, uri.getLastPathSegment());
+        return file.exists() ? file.toString(): null;
+    }
+
+    /**
+     * Fucntions taken from MediaUtils
+     *
+     * @author mitchellsundt@gmail.com
+     * @author paulburke
+     */
+    public static String getPath(final Context context, final Uri uri) {
+
+        // DocumentProvider
+        if (DocumentsContract.isDocumentUri(context, uri)) {
+
+            // ExternalStorageProvider
+            if (isExternalStorageDocument(uri)) {
+                final String docId = DocumentsContract.getDocumentId(uri);
+                final String[] split = docId.split(":");
+                final String type = split[0];
+
+                if ("primary".equalsIgnoreCase(type) || !new File("/storage/" + type).exists()) {
+                    return Environment.getExternalStorageDirectory() + "/" + split[1];
+                }
+                // To support paths like /storage/4A50-B543/
+                return "/storage/" + type + "/" + split[1];
+            } else if (isDownloadsDocument(uri)) {
+                // DownloadsProvider
+
+                final String id = DocumentsContract.getDocumentId(uri);
+                if (id.startsWith("raw:")) {
+                    return id.replaceFirst("raw:", "");
+                }
+
+                String[] contentUriPrefixesToTry = {
+                        "content://downloads/public_downloads",
+                        "content://downloads/my_downloads",
+                        "content://downloads/all_downloads"
+                };
+
+                for (String contentUriPrefix : contentUriPrefixesToTry) {
+                    Uri contentUri = ContentUris.withAppendedId(Uri.parse(contentUriPrefix), Long.parseLong(id));
+                    try {
+                        String path = getDataColumn(context, contentUri, null, null);
+                        if (path != null) {
+                            return path;
+                        }
+                    } catch (Exception e) {
+                        return null;
+                    }
+                }
+
+                // path could not be retrieved using ContentResolver, therefore copy file to accessible cache using streams
+                // https://github.com/coltoscosmin/FileUtils/blob/master/FileUtils.java
+                String fileName = getFileName(context, uri);
+                File cacheDir = getDocumentCacheDir(context);
+                File file = generateFileName(fileName, cacheDir);
+                String destinationPath = null;
+                if (file != null) {
+                    destinationPath = file.getAbsolutePath();
+                    saveFileFromUri(context, uri, destinationPath);
+                }
+
+                return destinationPath;
+            } else if (isMediaDocument(uri)) {
+                // MediaProvider
+                final String docId = DocumentsContract.getDocumentId(uri);
+                final String[] split = docId.split(":");
+                final String type = split[0];
+
+                Uri contentUri = null;
+                if ("image".equals(type)) {
+                    contentUri = MediaStore.Images.Media.EXTERNAL_CONTENT_URI;
+                } else if ("video".equals(type)) {
+                    contentUri = MediaStore.Video.Media.EXTERNAL_CONTENT_URI;
+                } else if ("audio".equals(type)) {
+                    contentUri = MediaStore.Audio.Media.EXTERNAL_CONTENT_URI;
+                }
+
+                final String selection = "_id=?";
+                final String[] selectionArgs = {split[1]};
+
+                return getDataColumn(context, contentUri, selection,
+                        selectionArgs);
+            }
+        } else if ("content".equalsIgnoreCase(uri.getScheme())) {
+            // MediaStore (and general)
+
+            // Return the remote address
+            if (isGooglePhotosUri(uri)) {
+                return uri.getLastPathSegment();
+            }
+
+            return getDataColumn(context, uri, null, null);
+        } else if ("file".equalsIgnoreCase(uri.getScheme())) {
+            // File
+            return uri.getPath();
+        }
+
+        return null;
+    }
+
+    public static String getFileName(@NonNull Context context, Uri uri) {
+        String mimeType = context.getContentResolver().getType(uri);
+        String filename = null;
+
+        if (mimeType == null) {
+            String path = getPath(context, uri);
+            if (path == null) {
+                filename = getName(uri.toString());
+            } else {
+                File file = new File(path);
+                filename = file.getName();
+            }
+        } else {
+            Cursor returnCursor = context.getContentResolver().query(uri, null, null, null, null);
+            if (returnCursor != null) {
+                int nameIndex = returnCursor.getColumnIndex(OpenableColumns.DISPLAY_NAME);
+                returnCursor.moveToFirst();
+                filename = returnCursor.getString(nameIndex);
+                returnCursor.close();
+            }
+        }
+
+        return filename;
+    }
+
+    private static String getName(String filename) {
+        if (filename == null) {
+            return null;
+        }
+        int index = filename.lastIndexOf('/');
+        return filename.substring(index + 1);
+    }
+
+    public static File getDocumentCacheDir(@NonNull Context context) {
+        File dir = new File(context.getCacheDir(), "documents");
+        if (!dir.exists()) {
+            dir.mkdirs();
+        }
+
+        return dir;
+    }
+
+    @Nullable
+    public static File generateFileName(@Nullable String name, File directory) {
+        if (name == null) {
+            return null;
+        }
+
+        File file = new File(directory, name);
+
+        if (file.exists()) {
+            String fileName = name;
+            String extension = "";
+            int dotIndex = name.lastIndexOf('.');
+            if (dotIndex > 0) {
+                fileName = name.substring(0, dotIndex);
+                extension = name.substring(dotIndex);
+            }
+
+            int index = 0;
+
+            while (file.exists()) {
+                index++;
+                name = fileName + '(' + index + ')' + extension;
+                file = new File(directory, name);
+            }
+        }
+
+        try {
+            if (!file.createNewFile()) {
+                return null;
+            }
+        } catch (IOException e) {
+            return null;
+        }
+
+        return file;
+    }
+
+    public static void saveFileFromUri(Context context, Uri uri, String destinationPath) {
+        InputStream is = null;
+        BufferedOutputStream bos = null;
+        try {
+            is = context.getContentResolver().openInputStream(uri);
+            bos = new BufferedOutputStream(new FileOutputStream(destinationPath, false));
+            byte[] buf = new byte[1024];
+            is.read(buf);
+            do {
+                bos.write(buf);
+            } while (is.read(buf) != -1);
+        } catch (IOException e) {
+            return;
+        } finally {
+            try {
+                if (is != null) {
+                    is.close();
+                }
+                if (bos != null) {
+                    bos.close();
+                }
+            } catch (IOException e) {
+                return;
+            }
+        }
+    }
+
+
 }
