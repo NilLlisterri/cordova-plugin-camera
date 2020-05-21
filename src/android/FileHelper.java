@@ -159,7 +159,8 @@ public class FileHelper {
             if (isFileProviderUri(context, uri))
                 return getFileProviderPath(context, uri);
 
-            return getDataColumn(context, uri, null, null);
+            String path = getDataColumn(context, uri, null, null);
+            if (path != null) return path;
         }
         // File
         else if ("file".equalsIgnoreCase(uri.getScheme())) {
