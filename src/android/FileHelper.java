@@ -119,17 +119,6 @@ public class FileHelper {
                             if (res != null) return res;
                         }
 
-                        String fileName = getFileName(context, uri);
-                        File cacheDir = getDocumentCacheDir(context);
-                        File file = generateFileName(fileName, cacheDir);
-                        String destinationPath = null;
-                        if (file != null) {
-                            destinationPath = file.getAbsolutePath();
-                            saveFileFromUri(context, uri, destinationPath);
-                        }
-
-                        return destinationPath;
-
                     } catch (NumberFormatException e) {
                         return null;
                     }
@@ -177,7 +166,16 @@ public class FileHelper {
             return uri.getPath();
         }
 
-        return null;
+        String fileName = getFileName(context, uri);
+        File cacheDir = getDocumentCacheDir(context);
+        File file = generateFileName(fileName, cacheDir);
+        String destinationPath = null;
+        if (file != null) {
+            destinationPath = file.getAbsolutePath();
+            saveFileFromUri(context, uri, destinationPath);
+        }
+
+        return destinationPath;
     }
 
     public static String getRealPathFromURI_BelowAPI11(Context context, Uri contentUri) {
